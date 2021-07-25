@@ -1,7 +1,9 @@
 package geecache
 
-import "sync"
-import "github.com/kingcanfish/geecache/lru"
+import (
+	"github.com/kingcanfish/geecache/lru"
+	"sync"
+)
 
 type cache struct {
 	mu         sync.Mutex

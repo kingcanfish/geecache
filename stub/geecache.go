@@ -2,6 +2,7 @@ package geecache
 
 import (
 	"fmt"
+	"github.com/kingcanfish/geecache/singleflight"
 	"log"
 	"sync"
 )
@@ -26,6 +27,9 @@ type Group struct {
 	getter    Getter
 	mainCache cache
 	peers     PeerPicker
+
+	// 使用 singleflight.Group 来确保每次远端缓存查询只进行一次
+	loader *singleflight.Group
 }
 
 var (
@@ -48,6 +52,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 			lru:        nil,
 			cacheBytes: cacheBytes,
 		},
+		loader: &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -85,18 +90,26 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
-func (g *Group) load(key string) (ByteView, error) {
-	var value ByteView
-	var err error
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+func (g *Group) load(key string) (value ByteView, err error) {
+	// each key is only fetched once (either locally or remotely)
+	// regardless of the number of concurrent callers.
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
-			log.Println("[GeeCache] Failed to get from peer", err)
 		}
+
+		return g.getLocally(key)
+	})
+
+	if err == nil {
+		return viewi.(ByteView), nil
 	}
-	return g.getLocally(key)
+	return
 }
 
 func (g *Group) getLocally(key string) (ByteView, error) {
